@@ -114,7 +114,7 @@ Using this new simple model, our in sample error is 0%. How does it perform agai
 
 ```{r validateModels}
 table(validation$classe, customPredict(validation))
-table(validation$classe, predict(modelFit, newdata=valdiation))
+table(validation$classe, predict(modelFit, newdata=validation))
 ```
 
 Both our simple model and the random forest model produce the same validation result, with an error rate of only .05%. This gives us a little insight into how the random forest is performing the splits.
