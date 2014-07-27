@@ -1,0 +1,205 @@
+---
+title: "Activity Classification"
+output: html_document
+---
+
+#Synopsis
+As wearable tech becomes more and more prevalent, more opportunities present themselves to do something interesting with the data these devices collect. However, the raw data itself is difficult to interpret. The purpose of this analysis was to use machine learning algorithms to create a model that was capable of taking the raw data as inputs and correctly identify the activity that was performed.
+
+The data collection process and original study are documented [here](http://groupware.les.inf.puc-rio.br/har).
+
+#Approach
+The training data was first downloaded and read into memory. A validation data set was set aside. Some data profiling was carried out to help eliminate noise and identify possible models to use. The non-validation training data was then used to develop multiple models, each of which was assessed for fit against the training set. The content of each model was explored in order to gain a better understanding of the model. The best model was then tested against the validation data set to check for overfitting of the model. The final model was then tested against the testing data set and the final model performance was assessed.
+
+## Environment
+This analysis was performed in the following environment:
+```{r environment}
+v <- R.Version();
+i <- Sys.info();
+v <- paste(v$version.string, "-", v$nickname, sep = " ");
+os <- paste(i["sysname"], i["release"], i["version"], sep = " ");
+
+```
+* R Version: `r v`
+* Operating System: `r os`
+
+No other software was used in the analysis.
+
+#Data Processing
+
+##Loading the data
+
+The training data is contained in a  comma separated value file that is available [here](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv), while the testing data is available [here](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv). The first step in the analysis is to load the data into R.
+
+
+```{r readData}
+# Set Internet2 - required for https URLs on Windows OS
+setInternet2(use = TRUE);
+# Generate an unused filename and download the zip to it.
+temp <- tempfile();
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", temp);
+
+# Read the data into memory then delete the temporary file.
+training <- read.csv(temp);
+unlink(temp);
+
+# Again for the testing data set
+temp <- tempfile();
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", temp);
+
+testing <- read.csv(temp);
+unlink(temp);
+
+#Set the seed for reproducibility
+set.seed(479)
+
+#Split training data into training and validation sets.
+library(caret)
+inTrain <- createDataPartition(y=training$classe, p=0.7, list=FALSE)
+validation <- training[-inTrain,]
+training <- training[inTrain,]
+
+```
+#Analysis
+
+Now that the data is memory we can start our analysis. We'll start with a random forest, as they typically perform well for classification problems, and can give us some ideas about the variable interactions.
+
+```{r eventTypeExploration}
+dim(training)
+# There are quite a few variables to consider. We could try PCA, but that would limit us to numerical variables.
+# We'll run the random forest, then look into the variable importance to see if we could slim down the model.
+# (Running this training will take quite some time)
+modelFit <- train(classe ~ ., data = training, method="rf", prox=TRUE)
+
+modelFit$finalModel
+
+predictable <- length(predict(modelFit, training)) / nrow(training)
+# Cases that can be predicted:
+predictable * 100
+```
+
+The first shot at a model produces excellent classification results, with an estimated out of bag error rate of 0.73%. However, if we look at the results of the confusion matrix, we realize that this model is not very useful because it was only able to classify a subset of the data, a tiny 2%. After some additional reading, it became apparent that the random forest algorith can't handle NA values for input variables, and silently omits any cases with incomplete data.
+
+However, the tree performed very well for those cases that are complete. We can use the information about variable importance to see if we can come up with a simpler model and avoid the NA models, but still get good performance.
+
+```{r variableImportance}
+head(modelFit$finalModel$importance)
+```
+
+The random forest states that the x variable is the only important variable for splitting the classifications. Let's look at the distribution of x values and outcomes:
+
+```{r xExploration}
+training[1:10, c(1, 160)]
+#All of the first entries are A's....perhaps the classe options are listed in order of x?
+library(ggplot2)
+qplot(training[, 1], y=training$classe, colour=training$classe, xlab="x variable", ylab="classe")
+```
+
+The values of classe are grouped continuously along the x variable. We could build a very simple model using this information to attempt to improve our predictions.
+
+```{r customModel}
+customPredict <- function(newdata) {
+	ifelse(newdata$X < 5581, "A", 
+		ifelse(newdata$X < 9378, "B", 
+		   	ifelse(newdata$X < 12801, "C", 
+		   		ifelse(newdata$X < 16018, "D", "E")
+		   	)
+		)
+	)
+}
+table(training$classe, customPredict(training))
+```
+
+Using this new simple model, our in sample error is 0%. How does it perform against the validation set?
+
+```{r validateModels}
+table(validation$classe, customPredict(validation))
+table(validation$classe, predict(modelFit, newdata=valdiation))
+```
+
+Both our simple model and the random forest model produce the same validation result, with an error rate of only .05%. This gives us a little insight into how the random forest is performing the splits.
+
+We could likely improve this further by creating multiple splits of the training data into training and validation sets, then choosing the resulting model that performed the best in validation, as the errors we are seeing are likely due to group boundaries that are not being caught during training because the boundaries are ending up in the validation set instead of the training set.
+
+However, at this point I am concerned that the models that have been developed are faulty. The X variable seems to be a data collection ordering variable, and future data collection may not follow the same collection patterns. Before tuning the existing model any further, we should check whether the model is completely inappropriate for the testing data set.
+
+I set out to create a confusion matrix with the testing set to discover if the X variable is just a systematic coincidence in my training set only to discover that the testing data set doesn't have values for the classe outcome.
+
+At this point, I had two options - assume X is unusable and build a new model, or try to use the existing models against the test set, submit some answers to the assignment, and use the results to create a confusion matrix, giving an indication of whether or not X is usable.
+
+Before making a decision, I looked at the data in both the testing set and the training set a little more closely. I saw a post on the forums where someone mentioned that a large number of the variables are aggregates for a window and only show up intermittently.
+
+```{r testingProfile}
+testing[!is.na(testing$stddev_yaw_forearm),1]
+testing[!is.na(testing$var_accel_forearm),1]
+```
+
+It appears the testing set doesn't include any aggregate records. This indicates that if we are not able to use the X variable, we would be attempting to predict the class of a lift using a single snapshot of movement within the lift. Based on what I know of the physics of the problem and the data being collected, it would be difficult to make a reliable prediction based on data collected at a single snapshot in time. The assignment is meant to be doable, so I'm thinking that the X variable is usable for the purpose of the assignment, even though I doubt it would be usable for any real prediction.
+
+To further check this, let's look at the combination of user names and X values in the testing set.
+
+```{r testingXValues}
+testing[, c("X", "user_name")]
+```
+
+This doesn't bode well. Unless all of the predictions should be "A", then our model is going to perform horribly on the test set, since all of the X value are below the "B" threshold.
+
+So we will reject our current model, and try again, but with some alterations based on what we've learned. We'll remove the X variable and the window aggregate variables and try a new forest.
+
+```{r newModel}
+columnsToRemove <- c(1, grep("kurtosis", names(training)), grep("skewness", names(training)), grep("max", names(training)), grep("min", names(training)), grep("amplitude", names(training)), grep("var", names(training)), grep("avg", names(training)), grep("stddev", names(training)))
+newTraining <- training[, -columnsToRemove]
+newValidation <- validation[, -columnsToRemove]
+newModFit <- train(classe ~ ., data = newTraining, method="rf", prox=TRUE)
+newModFit$finalModel
+```
+
+The new model performs very well, with an estimated OOB error rate of 0.09%. Additionally, this model is able to predict all of the cases, because every case is complete, with a value for every predictor.
+
+Let's take a look at the variable importance.
+
+```{r newModelImportance}
+newModFit$finalModel$importance
+```
+
+It looks like now the raw_timestamp_part_1 and num_window variables are the strongest predictors. This is a little bit of a concern because they may suffer from the same problems as X.
+
+```{r newModelPlots}
+qplot(newTraining$raw_timestamp_part_1, y=newTraining$classe, colour=newTraining$classe, xlab="raw_timestamp_part_1", ylab="classe")
+qplot(newTraining$num_window, y=newTraining$classe, colour=newTraining$classe, xlab="num_window", ylab="classe")
+```
+
+It looks like both variables have some splitting between classe values. Again, however, I'm concerned about how well these variables are going to translate to new cases. I've tried to look for a codebook for the dataset, but haven't had any luck online. Without any outside guidance, I'm leaning towards cutting these variables and trying again. Before I do, let's look at the validation results and calculate the test predictions for the new model so we can drop it from memory.
+
+```{r newModelValidation}
+table(newValidation$classe, predict(newModFit, newdata=newValidation))
+newPred <- predict(newModFit, newdata=testing[ , -columnsToRemove])
+newPred
+```
+
+From this we can see that the new model performs well in validation. Looking at the predicted values, we see very different predictions than our first model would have given (all A's) so it seems like we made a good decision in removing the X variable.
+
+Let's set up a new model run without the timestamp and num_window variables.
+
+```{r finalModel}
+finalColumnsToRemove <- c(columnsToRemove, 2:7)
+finalTraining <- training[ , -finalColumnsToRemove]
+finalValidation <- validation[ , -finalColumnsToRemove]
+finalForestFit <- train(classe ~ ., data = finalTraining, method="rf")
+finalForestFit$finalModel
+```
+
+This final model has an estimated OOB error rate of 0.76%, and seems like it will perform much more consistently regardless of the collection timing of the data, or the person who was measured during collection. In the interest of usability, we will use this model if it holds up well during validation.
+
+```{r finalValidation}
+table(finalValidation$classe, predict(finalForestFit, newdata=finalValidation))
+finalPred <- predict(finalForestFit, newdata=testing[ , -finalColumnsToRemove])
+finalPred
+```
+
+The validation error rate is 0.88%, which is fairly consistent with the OOB error rate, and it certainly still an acceptable error rate for this assignment.
+
+Ironically, the prediction for the test data is the same as our previous model. Entering these values into the submission for the prediction results shows that both models perform perfectly, getting all 20 predictions correct. However, I would still argue that the final model is a better model because it will retain its usability regardless of data collection details that shouldn't affect the outcome of the prediction.
+
+#Wrap Up
+This was a really good working example of how data mining can be used to predict classifications of data. I think that I could have saved a fair amount of time if there had been a gcode book for the data set or if I had spent more time in exploration in order to better understand which of the predictors should be kept. This is something I will keep in mind for the next project.
