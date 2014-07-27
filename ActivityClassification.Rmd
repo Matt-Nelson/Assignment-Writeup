@@ -112,11 +112,6 @@ table(training$classe, customPredict(training))
 
 Using this new simple model, our in sample error is 0%. How does it perform against the validation set?
 
-```{r validateModels}
-table(validation$classe, customPredict(validation))
-table(validation$classe, predict(modelFit, newdata=validation))
-```
-
 Both our simple model and the random forest model produce the same validation result, with an error rate of only .05%. This gives us a little insight into how the random forest is performing the splits.
 
 We could likely improve this further by creating multiple splits of the training data into training and validation sets, then choosing the resulting model that performed the best in validation, as the errors we are seeing are likely due to group boundaries that are not being caught during training because the boundaries are ending up in the validation set instead of the training set.
